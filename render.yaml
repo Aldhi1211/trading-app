@@ -7,7 +7,7 @@ services:
     plan: free
     envVars:
       - key: NODE_VERSION
-        value: 20
+        value: 20.19.0
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
