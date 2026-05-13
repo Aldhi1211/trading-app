@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: trading-bot
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: SYMBOL
+        value: BTCUSDT
+      - key: INTERVAL
+        value: 1m
+      - key: INITIAL_BALANCE_USDT
+        value: 1000
+      - key: TAKE_PROFIT_PCT
+        value: 0.02
+      - key: STOP_LOSS_PCT
+        value: 0.01
+      - key: POSITION_SIZING_MODE
+        value: percent
+      - key: TRADE_ALLOCATION_PCT
+        value: 0.95
+      - key: POSITION_FIXED_USDT
+        value: 950
+      - key: RSI_PERIOD
+        value: 14
+      - key: RSI_OVERSOLD
+        value: 35
+      - key: RSI_OVERBOUGHT
+        value: 70
+      - key: EMA_FAST_PERIOD
+        value: 9
+      - key: EMA_SLOW_PERIOD
+        value: 21
+      - key: DB_PATH
+        value: ./data/trading.db
+      - key: LOG_LEVEL
+        value: info

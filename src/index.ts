@@ -1,5 +1,6 @@
 // src/index.ts
 
+import { createServer } from 'http';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { BinanceStream } from './core/websocket/binanceStream.js';
@@ -188,7 +189,11 @@ async function main(): Promise<void> {
     }
   });
 
-  // ── 8. Start ───────────────────────────────────────────────────────────────
+  // ── 8. Health check server (required for Render free tier) ────────────────
+  const port = process.env['PORT'] ?? 3000;
+  createServer((_, res) => { res.writeHead(200); res.end('OK'); }).listen(port);
+
+  // ── 9. Start ───────────────────────────────────────────────────────────────
   stream.start();
 
   // Send the startup message exactly once, after the stream is started but
