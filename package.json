@@ -1,0 +1,38 @@
+{
+  "name": "crypto-paper-trading-bot",
+  "version": "1.0.0",
+  "description": "Crypto paper trading simulation — Binance WebSocket, RSI/EMA/MACD/BB indicators, SQLite persistence, Telegram notifications",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build":     "tsc",
+    "prebuild":  "tsc --noEmit",
+    "start":     "node dist/index.js",
+    "dev":       "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test":      "vitest run",
+    "test:watch":"vitest",
+    "clean":     "rimraf dist"
+  },
+  "dependencies": {
+    "better-sqlite3":     "^9.4.3",
+    "dotenv":             "^16.4.5",
+    "pino":               "^9.2.0",
+    "pino-pretty":        "^11.2.1",
+    "technicalindicators":"^3.1.0",
+    "ws":                 "^8.17.0",
+    "zod":                "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.10",
+    "@types/node":           "^20.14.0",
+    "@types/ws":             "^8.5.10",
+    "rimraf":                "^5.0.7",
+    "tsx":                   "^4.15.6",
+    "typescript":            "^5.4.5",
+    "vitest":                "^1.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
