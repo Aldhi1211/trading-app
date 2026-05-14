@@ -46,9 +46,11 @@ function pnlSign(pct: number): string {
 
 function reasonLabel(reason: SellReason): string {
   const labels: Record<SellReason, string> = {
-    TAKE_PROFIT:    'Take Profit ✅',
-    STOP_LOSS:      'Stop Loss ❌',
-    RSI_OVERBOUGHT: 'RSI Overbought 📈',
+    TAKE_PROFIT:     'Take Profit ✅',
+    STOP_LOSS:       'Stop Loss ❌',
+    RSI_OVERBOUGHT:  'RSI Overbought 📈',
+    EMA20_BREAKDOWN: 'EMA20 Breakdown 📉',
+    MACD_REVERSAL:   'MACD Reversal 🔄',
   };
   return labels[reason];
 }
