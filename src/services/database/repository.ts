@@ -18,7 +18,9 @@ export interface ITradeRepository {
   deleteOpenPosition(): void;
   getOpenPosition(): Position | null;
   getTotalPnl(symbol: string): { totalPnlUsdt: number; totalTrades: number; winningTrades: number };
+  getTradesSince(sinceMs: number): { profitUsdt: number; lossUsdt: number; trades: number; wins: number };
   savePortfolioSnapshot(state: PortfolioState): void;
+  close(): void;
 }
 
 interface TradeRow {
@@ -153,6 +155,31 @@ export class TradeRepository {
       totalPnlUsdt: row.total_pnl_usdt ?? 0,
       totalTrades: row.total_trades,
       winningTrades: row.winning_trades,
+    };
+  }
+
+  getTradesSince(sinceMs: number): { profitUsdt: number; lossUsdt: number; trades: number; wins: number } {
+    const row = this.db
+      .prepare(
+        `SELECT
+          SUM(CASE WHEN pnl_usdt > 0 THEN pnl_usdt ELSE 0 END) as profit_usdt,
+          SUM(CASE WHEN pnl_usdt < 0 THEN pnl_usdt ELSE 0 END) as loss_usdt,
+          COUNT(*) as trades,
+          SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins
+        FROM trades WHERE exit_time >= ?`
+      )
+      .get(sinceMs) as {
+        profit_usdt: number | null;
+        loss_usdt: number | null;
+        trades: number;
+        wins: number;
+      };
+
+    return {
+      profitUsdt: row.profit_usdt ?? 0,
+      lossUsdt:   row.loss_usdt   ?? 0,
+      trades:     row.trades,
+      wins:       row.wins,
     };
   }
 

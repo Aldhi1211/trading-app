@@ -116,6 +116,33 @@ export function buildPortfolioSummary(state: PortfolioState): string {
   ].join('\n');
 }
 
+export function buildPeriodicReport(
+  symbol: string,
+  periodHours: number,
+  stats: { profitUsdt: number; lossUsdt: number; trades: number; wins: number },
+  state: PortfolioState,
+): string {
+  const net     = stats.profitUsdt + stats.lossUsdt;
+  const netSign = net >= 0 ? '+' : '';
+  const losses  = stats.trades - stats.wins;
+  const winRate = stats.trades > 0
+    ? ((stats.wins / stats.trades) * 100).toFixed(0) + '%'
+    : 'n/a';
+
+  return [
+    `📊 ${periodHours}h Report — ${symbol}`,
+    SEP,
+    `✅ Profit  : +$${stats.profitUsdt.toFixed(2)} (${stats.wins} trade)`,
+    `❌ Loss    : -$${Math.abs(stats.lossUsdt).toFixed(2)} (${losses} trade)`,
+    `💰 Net     : ${netSign}$${net.toFixed(2)}`,
+    `🎯 Win Rate: ${winRate}`,
+    SEP,
+    `💵 Balance : $${formatUsd(state.balance)}`,
+    `📈 All-time: ${pnlSign(state.totalPnlPercent)} ($${state.totalPnlUsdt.toFixed(2)})`,
+    SEP,
+  ].join('\n');
+}
+
 export function buildErrorMessage(context: string, detail: string): string {
   return [`⚠️ Bot Error — ${context}`, detail, SEP].join('\n');
 }
@@ -174,6 +201,15 @@ export class TelegramNotifier {
 
   async notifyPortfolioSummary(state: PortfolioState): Promise<void> {
     await this.send(buildPortfolioSummary(state));
+  }
+
+  async notifyPeriodicReport(
+    symbol: string,
+    periodHours: number,
+    stats: { profitUsdt: number; lossUsdt: number; trades: number; wins: number },
+    state: PortfolioState,
+  ): Promise<void> {
+    await this.send(buildPeriodicReport(symbol, periodHours, stats, state));
   }
 
   async notifyError(context: string, detail: string): Promise<void> {

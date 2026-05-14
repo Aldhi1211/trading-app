@@ -201,7 +201,16 @@ async function main(): Promise<void> {
   const port = process.env['PORT'] ?? 3000;
   createServer((_, res) => { res.writeHead(200); res.end('OK'); }).listen(port);
 
-  // ── 9. Prefill buffer with historical candles ──────────────────────────────
+  // ── 9. Periodic 6-hour report ──────────────────────────────────────────────
+  const REPORT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  setInterval(async () => {
+    const sinceMs = Date.now() - REPORT_INTERVAL_MS;
+    const stats   = repo.getTradesSince(sinceMs);
+    const state   = portfolio.getState();
+    await telegram.notifyPeriodicReport(env.SYMBOL, 6, stats, state);
+  }, REPORT_INTERVAL_MS);
+
+  // ── 10. Prefill buffer with historical candles ─────────────────────────────
   try {
     const historical = await fetchHistoricalCandles(env.SYMBOL, env.INTERVAL, stream.getBufferCapacity());
     stream.prefill(historical);
