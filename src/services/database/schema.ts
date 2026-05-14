@@ -81,6 +81,30 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  // ── v2: relax reason CHECK to support new exit types ─────────────────────
+  {
+    name: '002_expand_sell_reasons',
+    sql: `
+      CREATE TABLE trades_new (
+        id          TEXT    PRIMARY KEY,
+        symbol      TEXT    NOT NULL,
+        entry_price REAL    NOT NULL CHECK (entry_price > 0),
+        exit_price  REAL    NOT NULL CHECK (exit_price > 0),
+        quantity    REAL    NOT NULL CHECK (quantity > 0),
+        entry_time  INTEGER NOT NULL,
+        exit_time   INTEGER NOT NULL CHECK (exit_time >= entry_time),
+        entry_rsi   REAL    NOT NULL,
+        pnl_percent REAL    NOT NULL,
+        pnl_usdt    REAL    NOT NULL,
+        reason      TEXT    NOT NULL
+      );
+      INSERT INTO trades_new SELECT * FROM trades;
+      DROP TABLE trades;
+      ALTER TABLE trades_new RENAME TO trades;
+      CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades (symbol);
+      CREATE INDEX IF NOT EXISTS idx_trades_exit_time ON trades (exit_time DESC);
+    `,
+  },
 ];
 
 // ---------------------------------------------------------------------------

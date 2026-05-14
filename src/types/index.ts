@@ -83,13 +83,19 @@ export interface IndicatorSnapshot {
   rsi: number | null;
   prevRsi: number | null;
 
-  emaFast: number | null;     // default EMA(9)
-  emaSlow: number | null;     // default EMA(21)
+  emaFast: number | null;     // EMA(20) — short-term trend
+  emaSlow: number | null;     // EMA(50) — medium-term trend
   prevEmaFast: number | null;
   prevEmaSlow: number | null;
 
+  ema200: number | null;      // EMA(200) — primary trend filter
+  prevEma200: number | null;
+
   macd: MacdResult | null;
+  prevMacd: MacdResult | null;
   bollingerBands: BollingerResult | null;
+
+  atr: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +108,12 @@ export interface IndicatorSnapshot {
 // STOP_LOSS) can fire before the indicator buffer is fully warmed up.
 // ---------------------------------------------------------------------------
 
-export type SellReason = 'TAKE_PROFIT' | 'STOP_LOSS' | 'RSI_OVERBOUGHT';
+export type SellReason =
+  | 'TAKE_PROFIT'
+  | 'STOP_LOSS'
+  | 'RSI_OVERBOUGHT'
+  | 'EMA20_BREAKDOWN'
+  | 'MACD_REVERSAL';
 
 export interface BuySignal {
   type: 'BUY';

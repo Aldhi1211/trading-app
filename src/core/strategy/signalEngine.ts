@@ -8,85 +8,45 @@ import type {
   SellSignal,
 } from '../../types/index.js';
 
-// ---------------------------------------------------------------------------
-// Configuration — all thresholds needed by the strategy.
-// Passed in at factory time, never imported from env.
-// This is what makes the evaluator a genuinely pure function: calling it with
-// the same snapshot and position always yields the same signal, regardless of
-// any global state.
-// ---------------------------------------------------------------------------
-
 export interface StrategyConfig {
-  /** Price must reach entryPrice * (1 + takeProfitPct) to trigger TAKE_PROFIT. */
   takeProfitPct: number;
-  /** Price must fall to entryPrice * (1 - stopLossPct) to trigger STOP_LOSS. */
-  stopLossPct: number;
-  /** RSI below this value is required for a BUY entry. */
-  rsiOversold: number;
-  /** RSI above this value triggers a SELL exit (RSI_OVERBOUGHT reason). */
-  rsiOverbought: number;
+  stopLossPct:   number;
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * The type of the evaluator returned by createSignalEngine.
- * Exported so callers can annotate DI parameters without importing the factory.
- */
 export type SignalEvaluator = (
   snapshot: IndicatorSnapshot,
   openPosition: Position | null,
 ) => Signal | null;
 
-/**
- * Factory: closes config over the evaluator and returns a plain function.
- *
- * Why factory-over-class:
- *   - The returned function carries no `this` — it can be stored, passed, and
- *     called without binding concerns.
- *   - Testing is `createSignalEngine(testConfig)(snapshot, position)` — no
- *     mock setup, no module imports to patch.
- *   - Multiple strategies can coexist with different configs in the same
- *     process without any global state conflict.
- */
+// RSI ranges for entry — fixed by strategy, not user-configurable
+const RSI_BUY_MIN  = 40;
+const RSI_BUY_MAX  = 65;
+const RSI_EXIT_OVERBOUGHT = 75;
+
 export function createSignalEngine(config: StrategyConfig): SignalEvaluator {
   return function evaluate(
     snapshot: IndicatorSnapshot,
     openPosition: Position | null,
   ): Signal | null {
-    // Exit is evaluated before entry. This means: if an EMA crossover BUY
-    // signal fires on the same candle where the price hits a stop/target,
-    // we exit first. Re-entry on the next candle is handled by the caller.
     if (openPosition !== null) {
       return evaluateExit(snapshot, openPosition, config);
     }
-
-    return evaluateEntry(snapshot, config);
+    return evaluateEntry(snapshot);
   };
 }
 
 // ---------------------------------------------------------------------------
-// Exit logic — private to this module
-//
-// Receives only the fields it reads, not the full snapshot, so a unit test
-// can construct a minimal object without satisfying the full IndicatorSnapshot
-// interface.
+// Exit logic
 // ---------------------------------------------------------------------------
 
-interface ExitInputs {
-  price: number;
-  symbol: string;
-  timestamp: number;
-  rsi: number | null;
-}
-
 function evaluateExit(
-  { price, symbol, timestamp, rsi }: ExitInputs,
+  snapshot: IndicatorSnapshot,
   position: Position,
   config: StrategyConfig,
 ): SellSignal | null {
+  const { price, symbol, timestamp, rsi, emaFast, macd, prevMacd } = snapshot;
+
+  // 1. Take profit / stop loss (price-based, always evaluated first)
   const takeProfitPrice = position.entryPrice * (1 + config.takeProfitPct);
   const stopLossPrice   = position.entryPrice * (1 - config.stopLossPct);
 
@@ -98,62 +58,71 @@ function evaluateExit(
     return { type: 'SELL', symbol, price, timestamp, reason: 'STOP_LOSS', rsi };
   }
 
-  // RSI overbought exit: only fires when RSI is available and exceeds threshold.
-  // If RSI is still null (buffer warming up), we stay in the position and rely
-  // on price-based exits only.
-  if (rsi !== null && rsi > config.rsiOverbought) {
+  // 2. RSI overbought reversal
+  if (rsi !== null && rsi > RSI_EXIT_OVERBOUGHT) {
     return { type: 'SELL', symbol, price, timestamp, reason: 'RSI_OVERBOUGHT', rsi };
+  }
+
+  // 3. Price broke below EMA 20
+  if (emaFast !== null && price < emaFast) {
+    return { type: 'SELL', symbol, price, timestamp, reason: 'EMA20_BREAKDOWN', rsi };
+  }
+
+  // 4. MACD histogram flipped from positive to negative (momentum reversal)
+  if (
+    macd !== null && prevMacd !== null &&
+    prevMacd.histogram >= 0 && macd.histogram < 0
+  ) {
+    return { type: 'SELL', symbol, price, timestamp, reason: 'MACD_REVERSAL', rsi };
   }
 
   return null; // hold
 }
 
 // ---------------------------------------------------------------------------
-// Entry logic — private to this module
+// Entry logic — confluence of 4 conditions
 // ---------------------------------------------------------------------------
 
-interface EntryInputs {
-  rsi: number | null;
-  prevRsi: number | null;
-  emaFast: number | null;
-  emaSlow: number | null;
-  prevEmaFast: number | null;
-  prevEmaSlow: number | null;
-  price: number;
-  symbol: string;
-  timestamp: number;
-}
+function evaluateEntry(snapshot: IndicatorSnapshot): BuySignal | null {
+  const {
+    price, symbol, timestamp, rsi,
+    emaFast, emaSlow, prevEmaFast, prevEmaSlow,
+    ema200, prevEma200,
+    macd, prevMacd,
+  } = snapshot;
 
-function evaluateEntry(
-  { rsi, emaFast, emaSlow, prevEmaFast, prevEmaSlow, price, symbol, timestamp }: EntryInputs,
-  config: StrategyConfig,
-): BuySignal | null {
-  // All indicators must be computed before we can evaluate entry conditions.
-  // Returning null here means "not enough data yet" — the caller should not
-  // interpret this as "no signal"; the next closed candle will be evaluated too.
+  // All indicators must be available
   if (
-    rsi       === null ||
-    emaFast   === null || emaSlow   === null ||
-    prevEmaFast === null || prevEmaSlow === null
+    rsi === null ||
+    emaFast === null || emaSlow === null ||
+    prevEmaFast === null || prevEmaSlow === null ||
+    ema200 === null || prevEma200 === null ||
+    macd === null || prevMacd === null
   ) {
     return null;
   }
 
-  // Condition 1: RSI in oversold zone
-  const rsiIsOversold = rsi < config.rsiOversold;
+  // Condition 1: price above EMA 200, slope flat or rising
+  const aboveTrend   = price > ema200;
+  const ema200Rising = ema200 >= prevEma200;
 
-  // Condition 2: EMA golden cross — fast was BELOW slow last candle,
-  // crossed to AT-OR-ABOVE slow on this candle.
-  //
-  // Using >= (not >) on the current side: a candle where fast === slow
-  // counts as a cross because it represents the transition point.
-  const emaCrossedUp = prevEmaFast < prevEmaSlow && emaFast >= emaSlow;
+  if (!aboveTrend || !ema200Rising) return null;
 
-  if (rsiIsOversold && emaCrossedUp) {
-    // rsi is narrowed to number here — TypeScript knows it's non-null
-    // because we checked above, so BuySignal.rsi: number is satisfied.
-    return { type: 'BUY', symbol, price, timestamp, rsi };
-  }
+  // Condition 2: bullish EMA alignment — EMA20 > EMA50 > EMA200
+  const bullishAlignment = emaFast > emaSlow && emaSlow > ema200;
 
-  return null;
+  if (!bullishAlignment) return null;
+
+  // Condition 3: MACD momentum confirmation (cross up OR histogram flip to positive)
+  const macdCrossUp     = prevMacd.macdLine <= prevMacd.signalLine && macd.macdLine > macd.signalLine;
+  const histogramFlipUp = prevMacd.histogram < 0 && macd.histogram >= 0;
+
+  if (!macdCrossUp && !histogramFlipUp) return null;
+
+  // Condition 4: RSI in valid entry range (40–65)
+  const rsiInRange = rsi >= RSI_BUY_MIN && rsi <= RSI_BUY_MAX;
+
+  if (!rsiInRange) return null;
+
+  return { type: 'BUY', symbol, price, timestamp, rsi };
 }

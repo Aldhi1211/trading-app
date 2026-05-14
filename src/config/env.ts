@@ -29,8 +29,8 @@ const envSchema = z.object({
   RSI_PERIOD:     z.coerce.number().int().positive().default(14),
   RSI_OVERSOLD:   z.coerce.number().default(35),
   RSI_OVERBOUGHT: z.coerce.number().default(70),
-  EMA_FAST_PERIOD: z.coerce.number().int().positive().default(9),
-  EMA_SLOW_PERIOD: z.coerce.number().int().positive().default(21),
+  EMA_FAST_PERIOD: z.coerce.number().int().positive().default(20),
+  EMA_SLOW_PERIOD: z.coerce.number().int().positive().default(50),
 
   // ── Database ──────────────────────────────────────────────────────────────
   DB_PATH: z.string().default('./data/trading.db'),

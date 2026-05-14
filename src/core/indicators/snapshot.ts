@@ -7,11 +7,14 @@ import {
   MACD_SIGNAL_PERIOD,
   BOLLINGER_PERIOD,
   BOLLINGER_STD_DEV,
+  EMA_200_PERIOD,
+  ATR_PERIOD,
 } from '../../config/constants.js';
 import { computeRsiWithPrev } from './rsi.js';
 import { computeEmaWithPrev } from './ema.js';
-import { computeMacd } from './macd.js';
+import { computeMacdWithPrev } from './macd.js';
 import { computeBollingerBands } from './bollinger.js';
+import { computeAtr } from './atr.js';
 import type { CandleBuffer, IndicatorSnapshot } from '../../types/index.js';
 
 /**
@@ -31,23 +34,21 @@ export function buildIndicatorSnapshot(
   // RSI — computeRsiWithPrev runs RSI.calculate() once and reads the last two
   // values. This avoids the old pattern of calling the library twice or slicing
   // the array.
-  const rsiResult = computeRsiWithPrev(closes, env.RSI_PERIOD);
-
-  // EMA crossover — computeEmaWithPrev also runs EMA.calculate() once per period,
-  // returning both current and prev without allocating a slice array.
+  const rsiResult    = computeRsiWithPrev(closes, env.RSI_PERIOD);
   const emaFastResult = computeEmaWithPrev(closes, env.EMA_FAST_PERIOD);
   const emaSlowResult = computeEmaWithPrev(closes, env.EMA_SLOW_PERIOD);
-
-  const macd          = computeMacd(closes, MACD_FAST_PERIOD, MACD_SLOW_PERIOD, MACD_SIGNAL_PERIOD);
+  const ema200Result  = computeEmaWithPrev(closes, EMA_200_PERIOD);
+  const macdResult    = computeMacdWithPrev(closes, MACD_FAST_PERIOD, MACD_SLOW_PERIOD, MACD_SIGNAL_PERIOD);
   const bollingerBands = computeBollingerBands(closes, BOLLINGER_PERIOD, BOLLINGER_STD_DEV);
+  const atr           = computeAtr(buffer.highs, buffer.lows, closes, ATR_PERIOD);
 
   return {
     symbol:   buffer.symbol,
     timestamp,
     price,
 
-    rsi:     rsiResult?.current    ?? null,
-    prevRsi: rsiResult?.prev       ?? null,
+    rsi:     rsiResult?.current ?? null,
+    prevRsi: rsiResult?.prev    ?? null,
 
     emaFast:     emaFastResult?.current ?? null,
     prevEmaFast: emaFastResult?.prev    ?? null,
@@ -55,7 +56,13 @@ export function buildIndicatorSnapshot(
     emaSlow:     emaSlowResult?.current ?? null,
     prevEmaSlow: emaSlowResult?.prev    ?? null,
 
-    macd,
+    ema200:     ema200Result?.current ?? null,
+    prevEma200: ema200Result?.prev    ?? null,
+
+    macd:     macdResult?.current ?? null,
+    prevMacd: macdResult?.prev    ?? null,
+
     bollingerBands,
+    atr,
   };
 }

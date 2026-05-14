@@ -14,6 +14,8 @@ export const MACD_SLOW_PERIOD    = 26;
 export const MACD_SIGNAL_PERIOD  = 9;
 export const BOLLINGER_PERIOD    = 20;
 export const BOLLINGER_STD_DEV   = 2;
+export const EMA_200_PERIOD      = 200;
+export const ATR_PERIOD          = 14;
 
 /**
  * Derives the rolling buffer capacity from the configured indicator periods.
@@ -31,10 +33,11 @@ export const BOLLINGER_STD_DEV   = 2;
  * minCandlesRequired (capacity - 10), which is when isReady() returns true.
  */
 export function computeBufferCapacity(rsiPeriod: number, emaSlowPeriod: number): number {
-  const rsiMin  = rsiPeriod + 2;                               // current + prevRsi
-  const emaMin  = emaSlowPeriod + 2;                           // current + prevEma
-  const macdMin = MACD_SLOW_PERIOD + MACD_SIGNAL_PERIOD;       // 35 for prev MACD signal
-  const bbMin   = BOLLINGER_PERIOD;
+  const rsiMin   = rsiPeriod + 2;
+  const emaMin   = emaSlowPeriod + 2;
+  const ema200Min = EMA_200_PERIOD + 2;
+  const macdMin  = MACD_SLOW_PERIOD + MACD_SIGNAL_PERIOD;
+  const bbMin    = BOLLINGER_PERIOD;
 
-  return Math.max(rsiMin, emaMin, macdMin, bbMin) + 10;
+  return Math.max(rsiMin, emaMin, ema200Min, macdMin, bbMin) + 10;
 }

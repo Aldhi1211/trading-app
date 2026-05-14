@@ -64,8 +64,6 @@ async function main(): Promise<void> {
   const evaluate = createSignalEngine({
     takeProfitPct: env.TAKE_PROFIT_PCT,
     stopLossPct:   env.STOP_LOSS_PCT,
-    rsiOversold:   env.RSI_OVERSOLD,
-    rsiOverbought: env.RSI_OVERBOUGHT,
   });
 
   const stream = new BinanceStream(env.SYMBOL, env.INTERVAL);
@@ -173,11 +171,12 @@ async function main(): Promise<void> {
       const signal   = evaluate(snapshot, state.openPosition);
 
       logger.info({
-        price:    candle.close,
-        rsi:      snapshot.rsi?.toFixed(2),
-        emaFast:  snapshot.emaFast?.toFixed(2),
-        emaSlow:  snapshot.emaSlow?.toFixed(2),
-        signal:   signal?.type ?? 'none',
+        price:   candle.close,
+        rsi:     snapshot.rsi?.toFixed(2),
+        ema20:   snapshot.emaFast?.toFixed(2),
+        ema50:   snapshot.emaSlow?.toFixed(2),
+        ema200:  snapshot.ema200?.toFixed(2),
+        signal:  signal?.type ?? 'none',
       }, 'Candle snapshot');
 
       if (!signal) return;
