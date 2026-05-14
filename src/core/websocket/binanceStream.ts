@@ -126,6 +126,16 @@ export class BinanceStream extends EventEmitter {
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
+  prefill(candles: Candle[]): void {
+    for (const candle of candles) {
+      this.pushToBuffer(candle);
+    }
+    logger.info(
+      { count: candles.length, ready: this.isReady() },
+      'Buffer prefilled with historical candles',
+    );
+  }
+
   start(): void {
     this.stopped = false;
     this.connect();
@@ -148,6 +158,10 @@ export class BinanceStream extends EventEmitter {
 
   getBufferSize(): number {
     return this.buffer.closes.length;
+  }
+
+  getBufferCapacity(): number {
+    return this.bufferCapacity;
   }
 
   // ── Connection lifecycle ────────────────────────────────────────────────────

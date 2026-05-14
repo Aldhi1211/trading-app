@@ -4,6 +4,7 @@ import { createServer } from 'http';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { BinanceStream } from './core/websocket/binanceStream.js';
+import { fetchHistoricalCandles } from './core/websocket/historicalLoader.js';
 import { buildIndicatorSnapshot } from './core/indicators/snapshot.js';
 import { createSignalEngine } from './core/strategy/signalEngine.js';
 import { PositionManager, computeRestoredBalance } from './core/portfolio/positionManager.js';
@@ -171,6 +172,14 @@ async function main(): Promise<void> {
       const state    = portfolio.getState();
       const signal   = evaluate(snapshot, state.openPosition);
 
+      logger.info({
+        price:    candle.close,
+        rsi:      snapshot.rsi?.toFixed(2),
+        emaFast:  snapshot.emaFast?.toFixed(2),
+        emaSlow:  snapshot.emaSlow?.toFixed(2),
+        signal:   signal?.type ?? 'none',
+      }, 'Candle snapshot');
+
       if (!signal) return;
 
       if (signal.type === 'BUY') {
@@ -193,7 +202,15 @@ async function main(): Promise<void> {
   const port = process.env['PORT'] ?? 3000;
   createServer((_, res) => { res.writeHead(200); res.end('OK'); }).listen(port);
 
-  // ── 9. Start ───────────────────────────────────────────────────────────────
+  // ── 9. Prefill buffer with historical candles ──────────────────────────────
+  try {
+    const historical = await fetchHistoricalCandles(env.SYMBOL, env.INTERVAL, stream.getBufferCapacity());
+    stream.prefill(historical);
+  } catch (err) {
+    logger.warn({ err }, 'Failed to fetch historical candles — warming up from live data');
+  }
+
+  // ── 10. Start ──────────────────────────────────────────────────────────────
   stream.start();
 
   // Send the startup message exactly once, after the stream is started but
