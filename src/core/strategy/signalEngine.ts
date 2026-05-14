@@ -63,12 +63,7 @@ function evaluateExit(
     return { type: 'SELL', symbol, price, timestamp, reason: 'RSI_OVERBOUGHT', rsi };
   }
 
-  // 3. Price broke below EMA 20
-  if (emaFast !== null && price < emaFast) {
-    return { type: 'SELL', symbol, price, timestamp, reason: 'EMA20_BREAKDOWN', rsi };
-  }
-
-  // 4. MACD histogram flipped from positive to negative (momentum reversal)
+  // 3. MACD histogram flipped from positive to negative (momentum reversal)
   if (
     macd !== null && prevMacd !== null &&
     prevMacd.histogram >= 0 && macd.histogram < 0
