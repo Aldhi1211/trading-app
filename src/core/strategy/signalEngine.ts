@@ -63,6 +63,14 @@ function evaluateExit(
     return { type: 'SELL', symbol, price, timestamp, reason: 'RSI_OVERBOUGHT', rsi };
   }
 
+  // 3. MACD histogram flipped from positive to negative (momentum reversal)
+  if (
+    macd !== null && prevMacd !== null &&
+    prevMacd.histogram >= 0 && macd.histogram < 0
+  ) {
+    return { type: 'SELL', symbol, price, timestamp, reason: 'MACD_REVERSAL', rsi };
+  }
+
   return null; // hold
 }
 
