@@ -6,7 +6,7 @@ import fs from 'fs';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { runMigrations } from './schema.js';
-import type { Trade, Position, PortfolioState } from '../../types/index.js';
+import type { Trade, Position, PortfolioState, PositionSide } from '../../types/index.js';
 
 // ---------------------------------------------------------------------------
 // Repository interface — the position manager depends on this, not on the
@@ -26,6 +26,7 @@ export interface ITradeRepository {
 interface TradeRow {
   id: string;
   symbol: string;
+  side: string;
   entry_price: number;
   exit_price: number;
   quantity: number;
@@ -40,6 +41,7 @@ interface TradeRow {
 interface PositionRow {
   id: string;
   symbol: string;
+  side: string;
   entry_price: number;
   quantity: number;
   entry_time: number;
@@ -47,7 +49,7 @@ interface PositionRow {
   // Nullable: rows written before migration 003 won't have these.
   stop_price: number | null;
   take_profit_price: number | null;
-  highest_price: number | null;
+  highest_price: number | null;   // stores the favorable extreme (see Position.extremePrice)
   atr_at_entry: number | null;
   initial_risk: number | null;
 }
@@ -72,10 +74,10 @@ export class TradeRepository {
   insertTrade(trade: Trade): void {
     const stmt = this.db.prepare(`
       INSERT INTO trades (
-        id, symbol, entry_price, exit_price, quantity,
+        id, symbol, side, entry_price, exit_price, quantity,
         entry_time, exit_time, entry_rsi, pnl_percent, pnl_usdt, reason
       ) VALUES (
-        @id, @symbol, @entry_price, @exit_price, @quantity,
+        @id, @symbol, @side, @entry_price, @exit_price, @quantity,
         @entry_time, @exit_time, @entry_rsi, @pnl_percent, @pnl_usdt, @reason
       )
     `);
@@ -83,6 +85,7 @@ export class TradeRepository {
     stmt.run({
       id: trade.id,
       symbol: trade.symbol,
+      side: trade.side,
       entry_price: trade.entryPrice,
       exit_price: trade.exitPrice,
       quantity: trade.quantity,
@@ -102,23 +105,24 @@ export class TradeRepository {
       this.db
         .prepare(
           `INSERT INTO open_positions (
-             id, symbol, entry_price, quantity, entry_time, entry_rsi,
+             id, symbol, side, entry_price, quantity, entry_time, entry_rsi,
              stop_price, take_profit_price, highest_price, atr_at_entry, initial_risk
            ) VALUES (
-             @id, @symbol, @entry_price, @quantity, @entry_time, @entry_rsi,
+             @id, @symbol, @side, @entry_price, @quantity, @entry_time, @entry_rsi,
              @stop_price, @take_profit_price, @highest_price, @atr_at_entry, @initial_risk
            )`
         )
         .run({
           id: position.id,
           symbol: position.symbol,
+          side: position.side,
           entry_price: position.entryPrice,
           quantity: position.quantity,
           entry_time: position.entryTime,
           entry_rsi: position.entryRsi,
           stop_price: position.stopPrice,
           take_profit_price: position.takeProfitPrice,
-          highest_price: position.highestPrice,
+          highest_price: position.extremePrice,
           atr_at_entry: position.atrAtEntry,
           initial_risk: position.initialRisk,
         });
@@ -139,24 +143,28 @@ export class TradeRepository {
     // Back-fill risk fields for positions written before migration 003. We
     // derive conservative levels from the entry price using the configured
     // fallback percentages so a recovered legacy position still has a valid
-    // stop/target and can be trailed.
+    // stop/target and can be trailed. Legacy rows are always LONG (shorts
+    // didn't exist before migration 004), so the back-fill is long-oriented.
+    const side: PositionSide = row.side === 'SHORT' ? 'SHORT' : 'LONG';
+    const dir = side === 'LONG' ? 1 : -1;
     const entryPrice   = row.entry_price;
     const initialRisk  = row.initial_risk  ?? entryPrice * env.STOP_LOSS_PCT;
-    const stopPrice    = row.stop_price    ?? entryPrice - initialRisk;
-    const takeProfit   = row.take_profit_price ?? entryPrice * (1 + env.TAKE_PROFIT_PCT);
-    const highestPrice = row.highest_price ?? entryPrice;
+    const stopPrice    = row.stop_price    ?? entryPrice - dir * initialRisk;
+    const takeProfit   = row.take_profit_price ?? entryPrice + dir * entryPrice * env.TAKE_PROFIT_PCT;
+    const extremePrice = row.highest_price ?? entryPrice;
     const atrAtEntry   = row.atr_at_entry  ?? initialRisk / env.ATR_SL_MULT;
 
     return {
       id: row.id,
       symbol: row.symbol,
+      side,
       entryPrice,
       quantity: row.quantity,
       entryTime: row.entry_time,
       entryRsi: row.entry_rsi,
       stopPrice,
       takeProfitPrice: takeProfit,
-      highestPrice,
+      extremePrice,
       atrAtEntry,
       initialRisk,
     };
@@ -240,6 +248,7 @@ export class TradeRepository {
     return {
       id: row.id,
       symbol: row.symbol,
+      side: row.side === 'SHORT' ? 'SHORT' : 'LONG',
       entryPrice: row.entry_price,
       exitPrice: row.exit_price,
       quantity: row.quantity,

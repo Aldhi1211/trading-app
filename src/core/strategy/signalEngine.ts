@@ -4,35 +4,33 @@ import type {
   IndicatorSnapshot,
   Position,
   Signal,
-  BuySignal,
-  SellSignal,
+  EntrySignal,
+  ExitSignal,
 } from '../../types/index.js';
 
 // ---------------------------------------------------------------------------
 // Strategy configuration
 //
-// Note: stop-loss / take-profit LEVELS are no longer computed here. They are
-// derived from volatility (ATR) and stored on the Position when it is opened
-// (see PositionManager), so the engine only has to compare the live price to
-// the levels the position already carries. This keeps the engine a pure,
-// stateless price→signal function and puts all risk math in one place.
+// Note: stop-loss / take-profit LEVELS are not computed here. They are derived
+// from volatility (ATR) and stored on the Position when it is opened (see
+// PositionManager), so the engine only compares the live price to the levels
+// the position already carries. This keeps the engine a pure, stateless
+// price→signal function and puts all risk math in one place.
 // ---------------------------------------------------------------------------
 
 export interface StrategyConfig {
-  /** Lower bound of the RSI entry window (inclusive). */
+  /** Lower bound of the long RSI entry window (inclusive). */
   rsiBuyMin: number;
-  /** Upper bound of the RSI entry window (inclusive). */
+  /** Upper bound of the long RSI entry window (inclusive). */
   rsiBuyMax: number;
-  /**
-   * Volume confirmation: require candle volume >= volMaMult * avgVolume.
-   * 0 disables the filter.
-   */
+  /** Volume confirmation: require volume >= volMaMult * avgVolume. 0 disables. */
   volMaMult: number;
-  /**
-   * Volatility floor: require ATR/price >= minAtrPct (skip dead markets).
-   * 0 disables the filter.
-   */
+  /** Volatility floor: require ATR/price >= minAtrPct. 0 disables. */
   minAtrPct: number;
+  /** Allow LONG entries (buy uptrends). */
+  allowLong: boolean;
+  /** Allow SHORT entries (sell-to-open downtrends). */
+  allowShort: boolean;
 }
 
 export type SignalEvaluator = (
@@ -54,37 +52,47 @@ export function createSignalEngine(config: StrategyConfig): SignalEvaluator {
 
 // ---------------------------------------------------------------------------
 // Exit logic — compares live price to the volatility-adaptive levels that the
-// PositionManager placed (and, for the stop, keeps trailing) on the position.
+// PositionManager placed (and keeps trailing) on the position. The geometry is
+// mirrored by side: a LONG target is above entry and its stop below; a SHORT
+// target is below entry and its stop above.
 // ---------------------------------------------------------------------------
 
 function evaluateExit(
   snapshot: IndicatorSnapshot,
   position: Position,
-): SellSignal | null {
+): ExitSignal | null {
   const { price, symbol, timestamp, rsi } = snapshot;
 
-  // Take profit — hard target backstop.
-  if (price >= position.takeProfitPrice) {
-    return { type: 'SELL', symbol, price, timestamp, reason: 'TAKE_PROFIT', rsi };
+  if (position.side === 'LONG') {
+    if (price >= position.takeProfitPrice) {
+      return { type: 'EXIT', symbol, price, timestamp, reason: 'TAKE_PROFIT', rsi };
+    }
+    if (price <= position.stopPrice) {
+      // Stop at-or-above entry means the trail locked in profit/scratch.
+      const reason = position.stopPrice >= position.entryPrice ? 'TRAILING_STOP' : 'STOP_LOSS';
+      return { type: 'EXIT', symbol, price, timestamp, reason, rsi };
+    }
+    return null;
   }
 
-  // Stop — a single comparison covers both the initial protective stop and the
-  // trailing stop, since the trailing logic only ever raises stopPrice. We label
-  // it TRAILING_STOP once the stop has been ratcheted to or above breakeven
-  // (i.e. the exit locks in profit / scratch), and STOP_LOSS otherwise.
-  if (price <= position.stopPrice) {
-    const reason = position.stopPrice >= position.entryPrice ? 'TRAILING_STOP' : 'STOP_LOSS';
-    return { type: 'SELL', symbol, price, timestamp, reason, rsi };
+  // SHORT
+  if (price <= position.takeProfitPrice) {
+    return { type: 'EXIT', symbol, price, timestamp, reason: 'TAKE_PROFIT', rsi };
   }
-
-  return null; // hold
+  if (price >= position.stopPrice) {
+    // Stop at-or-below entry means the trail locked in profit/scratch.
+    const reason = position.stopPrice <= position.entryPrice ? 'TRAILING_STOP' : 'STOP_LOSS';
+    return { type: 'EXIT', symbol, price, timestamp, reason, rsi };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
 // Entry logic — confluence of trend, momentum, location, and participation.
+// Long and short are exact mirrors of one another.
 // ---------------------------------------------------------------------------
 
-function evaluateEntry(snapshot: IndicatorSnapshot, config: StrategyConfig): BuySignal | null {
+function evaluateEntry(snapshot: IndicatorSnapshot, config: StrategyConfig): EntrySignal | null {
   const {
     price, symbol, timestamp, rsi,
     emaFast, emaSlow,
@@ -104,36 +112,44 @@ function evaluateEntry(snapshot: IndicatorSnapshot, config: StrategyConfig): Buy
     return null;
   }
 
-  // Condition 1: trend — price above EMA200 and EMA200 flat-to-rising.
-  const aboveTrend   = price > ema200;
-  const ema200Rising = ema200 >= prevEma200;
-  if (!aboveTrend || !ema200Rising) return null;
-
-  // Condition 2: bullish EMA alignment — fast > slow > EMA200.
-  const bullishAlignment = emaFast > emaSlow && emaSlow > ema200;
-  if (!bullishAlignment) return null;
-
-  // Condition 3: MACD momentum confirmation (cross up OR histogram flip positive).
-  const macdCrossUp     = prevMacd.macdLine <= prevMacd.signalLine && macd.macdLine > macd.signalLine;
-  const histogramFlipUp = prevMacd.histogram < 0 && macd.histogram >= 0;
-  if (!macdCrossUp && !histogramFlipUp) return null;
-
-  // Condition 4: RSI inside the entry window (not exhausted, not weak).
-  const rsiInRange = rsi >= config.rsiBuyMin && rsi <= config.rsiBuyMax;
-  if (!rsiInRange) return null;
-
-  // Condition 5: volatility floor — skip dead, untradeable markets.
+  // Shared filters (side-independent).
+  // Volatility floor — skip dead, untradeable markets.
   if (config.minAtrPct > 0 && atr / price < config.minAtrPct) return null;
+  // Volume confirmation — real moves carry participation.
+  const volumeOk =
+    config.volMaMult <= 0 ||
+    volume === null || avgVolume === null ||
+    volume >= config.volMaMult * avgVolume;
+  if (!volumeOk) return null;
 
-  // Condition 6: volume confirmation — real breakouts carry participation.
-  if (
-    config.volMaMult > 0 &&
-    volume !== null &&
-    avgVolume !== null &&
-    volume < config.volMaMult * avgVolume
-  ) {
-    return null;
+  // ── LONG: uptrend pullback continuation ──────────────────────────────────
+  if (config.allowLong) {
+    const aboveTrend       = price > ema200 && ema200 >= prevEma200;
+    const bullishAlignment = emaFast > emaSlow && emaSlow > ema200;
+    const macdUp =
+      (prevMacd.macdLine <= prevMacd.signalLine && macd.macdLine > macd.signalLine) ||
+      (prevMacd.histogram < 0 && macd.histogram >= 0);
+    const rsiOk = rsi >= config.rsiBuyMin && rsi <= config.rsiBuyMax;
+
+    if (aboveTrend && bullishAlignment && macdUp && rsiOk) {
+      return { type: 'ENTRY', side: 'LONG', symbol, price, timestamp, rsi, atr };
+    }
   }
 
-  return { type: 'BUY', symbol, price, timestamp, rsi, atr };
+  // ── SHORT: downtrend rally continuation (mirror of LONG) ─────────────────
+  if (config.allowShort) {
+    const belowTrend       = price < ema200 && ema200 <= prevEma200;
+    const bearishAlignment = emaFast < emaSlow && emaSlow < ema200;
+    const macdDown =
+      (prevMacd.macdLine >= prevMacd.signalLine && macd.macdLine < macd.signalLine) ||
+      (prevMacd.histogram > 0 && macd.histogram <= 0);
+    // RSI window mirrored around 50: long [min,max] → short [100-max, 100-min].
+    const rsiOk = rsi >= 100 - config.rsiBuyMax && rsi <= 100 - config.rsiBuyMin;
+
+    if (belowTrend && bearishAlignment && macdDown && rsiOk) {
+      return { type: 'ENTRY', side: 'SHORT', symbol, price, timestamp, rsi, atr };
+    }
+  }
+
+  return null;
 }

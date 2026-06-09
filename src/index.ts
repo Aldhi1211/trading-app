@@ -78,10 +78,12 @@ async function main(): Promise<void> {
   );
 
   const evaluate = createSignalEngine({
-    rsiBuyMin: env.RSI_BUY_MIN,
-    rsiBuyMax: env.RSI_BUY_MAX,
-    volMaMult: env.VOL_MA_MULT,
-    minAtrPct: env.MIN_ATR_PCT,
+    rsiBuyMin:  env.RSI_BUY_MIN,
+    rsiBuyMax:  env.RSI_BUY_MAX,
+    volMaMult:  env.VOL_MA_MULT,
+    minAtrPct:  env.MIN_ATR_PCT,
+    allowLong:  env.ALLOW_LONG,
+    allowShort: env.ALLOW_SHORT,
   });
 
   // Cooldown counter: after a losing trade, suppress new entries for
@@ -207,28 +209,29 @@ async function main(): Promise<void> {
         ema20:   snapshot.emaFast?.toFixed(2),
         ema50:   snapshot.emaSlow?.toFixed(2),
         ema200:  snapshot.ema200?.toFixed(2),
+        side:    state.openPosition?.side,
         stop:    state.openPosition?.stopPrice.toFixed(2),
-        signal:  signal?.type ?? 'none',
+        signal:  signal ? (signal.type === 'ENTRY' ? `ENTRY ${signal.side}` : 'EXIT') : 'none',
         cooldown: cooldownRemaining,
       }, 'Candle snapshot');
 
       if (!signal) return;
 
-      if (signal.type === 'BUY') {
+      if (signal.type === 'ENTRY') {
         if (cooldownRemaining > 0) {
-          logger.info({ cooldownRemaining }, 'BUY signal suppressed — in post-loss cooldown');
+          logger.info({ cooldownRemaining, side: signal.side }, 'ENTRY signal suppressed — in post-loss cooldown');
           return;
         }
         const position = portfolio.openPosition(signal);
         if (position) {
-          await telegram.notifyBuy(signal);
+          await telegram.notifyEntry(signal);
         }
       } else {
         const trade = portfolio.closePosition(signal);
         if (trade) {
           // Arm the cooldown only after a losing exit.
           if (trade.pnlUsdt < 0) cooldownRemaining = env.ENTRY_COOLDOWN_BARS;
-          await telegram.notifySell(signal, trade.pnlPercent, trade.pnlUsdt);
+          await telegram.notifyExit(signal, trade.pnlPercent, trade.pnlUsdt);
         }
       }
     } catch (err) {

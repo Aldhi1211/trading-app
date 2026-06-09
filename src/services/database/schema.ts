@@ -119,6 +119,17 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE open_positions ADD COLUMN initial_risk      REAL;
     `,
   },
+  // ── v4: trade direction (LONG / SHORT) ────────────────────────────────────
+  // Existing rows predate short-selling, so they default to LONG. The
+  // highest_price column (added in v3) now stores the favorable extreme — the
+  // highest price for a LONG, the lowest for a SHORT.
+  {
+    name: '004_position_side',
+    sql: `
+      ALTER TABLE open_positions ADD COLUMN side TEXT NOT NULL DEFAULT 'LONG';
+      ALTER TABLE trades         ADD COLUMN side TEXT NOT NULL DEFAULT 'LONG';
+    `,
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -68,6 +68,13 @@ const envSchema = z.object({
   MIN_ATR_PCT:           z.coerce.number().min(0).default(0),
   ENTRY_COOLDOWN_BARS:   z.coerce.number().int().min(0).default(3),
 
+  // ── Trade direction ─────────────────────────────────────────────────────────
+  // ALLOW_LONG  : take long  positions (buy uptrends).
+  // ALLOW_SHORT : take short positions (sell-to-open downtrends).
+  // Shorting is a futures/margin simulation — impossible on a spot account.
+  ALLOW_LONG:            boolFromEnv(true),
+  ALLOW_SHORT:           boolFromEnv(true),
+
   // ── Indicator parameters ──────────────────────────────────────────────────
   RSI_PERIOD:     z.coerce.number().int().positive().default(14),
   RSI_OVERSOLD:   z.coerce.number().default(35),

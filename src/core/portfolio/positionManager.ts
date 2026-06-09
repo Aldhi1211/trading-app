@@ -1,7 +1,7 @@
 // src/core/portfolio/positionManager.ts
 
 import { randomUUID } from 'crypto';
-import type { BuySignal, SellSignal, Position, Trade, PortfolioState, ILogger } from '../../types/index.js';
+import type { EntrySignal, ExitSignal, Position, Trade, PortfolioState, ILogger } from '../../types/index.js';
 import type { ITradeRepository } from '../../services/database/repository.js';
 
 // ---------------------------------------------------------------------------
@@ -147,27 +147,36 @@ export class PositionManager {
   getUnrealizedPnl(currentPrice: number): number | null {
     const pos = this.state.openPosition;
     if (pos === null) return null;
-    return pos.quantity * (currentPrice - pos.entryPrice);
+    const dir = pos.side === 'LONG' ? 1 : -1;
+    return pos.quantity * (currentPrice - pos.entryPrice) * dir;
   }
 
   /**
-   * Returns the total equity (available balance + open position market value)
-   * at `currentPrice`.
+   * Returns the total equity (available balance + open position value) at
+   * `currentPrice`. Position value = locked collateral + unrealized PnL, which
+   * reduces to quantity × price for a LONG and stays correct for a SHORT.
    */
   getTotalEquity(currentPrice: number): number {
     const pos = this.state.openPosition;
-    const positionValue = pos !== null ? pos.quantity * currentPrice : 0;
+    if (pos === null) return this.state.balance;
+    const dir = pos.side === 'LONG' ? 1 : -1;
+    const positionValue =
+      pos.quantity * pos.entryPrice + pos.quantity * (currentPrice - pos.entryPrice) * dir;
     return this.state.balance + positionValue;
   }
 
   // ── Writes ────────────────────────────────────────────────────────────────
 
   /**
-   * Opens a simulated position on a BUY signal.
+   * Opens a simulated position (LONG or SHORT) on an ENTRY signal.
    * Returns the new Position, or null if opening is not possible
    * (already open, insufficient balance, zero allocation).
+   *
+   * The stop/target geometry is mirrored by side: a LONG stop sits below entry
+   * and its target above; a SHORT stop sits above and its target below.
+   * Collateral is locked symmetrically (quantity × entry) for both sides.
    */
-  openPosition(signal: BuySignal): Position | null {
+  openPosition(signal: EntrySignal): Position | null {
     if (this.state.openPosition !== null) {
       this.deps.logger.warn('openPosition called while a position is already open — skipping');
       return null;
@@ -184,8 +193,11 @@ export class PositionManager {
       ? risk.atrTpMult * (signal.atr as number)
       : signal.price * risk.takeProfitPct;
 
-    const stopPrice       = signal.price - stopDistance;
-    const takeProfitPrice = signal.price + tpDistance;
+    // dir = +1 for LONG, -1 for SHORT. Stop is placed against the trade, target
+    // in its favor: stop = entry - dir*stopDist, target = entry + dir*tpDist.
+    const dir = signal.side === 'LONG' ? 1 : -1;
+    const stopPrice       = signal.price - dir * stopDistance;
+    const takeProfitPrice = signal.price + dir * tpDistance;
     // ATR used for the trail distance; if none was available, derive an
     // equivalent from the stop distance so trailing still behaves sensibly.
     const atrAtEntry = useAtr ? (signal.atr as number) : stopDistance / risk.atrSlMult;
@@ -202,13 +214,14 @@ export class PositionManager {
     const position: Position = {
       id:              this.generateId(),
       symbol:          signal.symbol,
+      side:            signal.side,
       entryPrice:      signal.price,
       quantity,
       entryTime:       signal.timestamp,
       entryRsi:        signal.rsi,
       stopPrice,
       takeProfitPrice,
-      highestPrice:    signal.price,
+      extremePrice:    signal.price,
       atrAtEntry,
       initialRisk:     stopDistance,
     };
@@ -224,6 +237,7 @@ export class PositionManager {
     this.deps.logger.info(
       {
         symbol:      signal.symbol,
+        side:        signal.side,
         entryPrice:  signal.price,
         stopPrice:   stopPrice.toFixed(2),
         takeProfit:  takeProfitPrice.toFixed(2),
@@ -234,7 +248,7 @@ export class PositionManager {
         sizingMode:  this.config.sizing.mode,
         atrUsed:     useAtr,
       },
-      'FAKE BUY — position opened',
+      `FAKE ${signal.side === 'LONG' ? 'BUY' : 'SHORT'} — position opened`,
     );
 
     return position;
@@ -244,64 +258,78 @@ export class PositionManager {
    * Ratchets the trailing stop on the open position toward the current price.
    * Call once per closed candle BEFORE evaluating the exit signal.
    *
-   * Behaviour (only when risk.useTrailing is enabled):
-   *   1. Track the highest price seen since entry.
-   *   2. Once profit reaches breakevenAtR × initialRisk, raise the stop to at
-   *      least breakeven (entry price) — the trade becomes risk-free.
-   *   3. From then on, trail the peak by trailAtrMult × ATR.
+   * Behaviour (only when risk.useTrailing is enabled), mirrored by side:
+   *   1. Track the most-favorable price since entry (highest for LONG, lowest
+   *      for SHORT).
+   *   2. Once profit reaches breakevenAtR × initialRisk, move the stop to (at
+   *      least) breakeven — the trade becomes risk-free.
+   *   3. From then on, trail that extreme by trailAtrMult × ATR.
    *
-   * The stop only ever moves UP, never down. No-op when nothing changes, so it
-   * does not thrash the database on every candle.
+   * The stop only ever moves in the favorable direction (up for LONG, down for
+   * SHORT). No-op when nothing changes, so it does not thrash the database.
    */
   updateTrailing(currentPrice: number): void {
     const pos = this.state.openPosition;
     if (pos === null || !this.config.risk.useTrailing) return;
 
-    const newHigh = Math.max(pos.highestPrice, currentPrice);
-    let newStop   = pos.stopPrice;
+    const { risk } = this.config;
+    const trailDist = risk.trailAtrMult * pos.atrAtEntry;
+    let newExtreme  = pos.extremePrice;
+    let newStop     = pos.stopPrice;
 
-    const breakevenTrigger = pos.entryPrice + this.config.risk.breakevenAtR * pos.initialRisk;
-    if (newHigh >= breakevenTrigger) {
-      // 1) lock in (at least) breakeven, then 2) trail the peak.
-      newStop = Math.max(newStop, pos.entryPrice);
-      const trailStop = newHigh - this.config.risk.trailAtrMult * pos.atrAtEntry;
-      newStop = Math.max(newStop, trailStop);
+    if (pos.side === 'LONG') {
+      newExtreme = Math.max(pos.extremePrice, currentPrice);
+      const breakevenTrigger = pos.entryPrice + risk.breakevenAtR * pos.initialRisk;
+      if (newExtreme >= breakevenTrigger) {
+        newStop = Math.max(newStop, pos.entryPrice, newExtreme - trailDist);
+      }
+    } else {
+      newExtreme = Math.min(pos.extremePrice, currentPrice);
+      const breakevenTrigger = pos.entryPrice - risk.breakevenAtR * pos.initialRisk;
+      if (newExtreme <= breakevenTrigger) {
+        newStop = Math.min(newStop, pos.entryPrice, newExtreme + trailDist);
+      }
     }
 
-    if (newHigh === pos.highestPrice && newStop === pos.stopPrice) return;
+    if (newExtreme === pos.extremePrice && newStop === pos.stopPrice) return;
 
-    const updated: Position = { ...pos, highestPrice: newHigh, stopPrice: newStop };
+    const updated: Position = { ...pos, extremePrice: newExtreme, stopPrice: newStop };
     this.state = { ...this.state, openPosition: updated };
     this.deps.repo.saveOpenPosition(updated);
 
     if (newStop !== pos.stopPrice) {
       this.deps.logger.info(
-        { symbol: pos.symbol, oldStop: pos.stopPrice.toFixed(2), newStop: newStop.toFixed(2), peak: newHigh.toFixed(2) },
-        'Trailing stop raised',
+        { symbol: pos.symbol, side: pos.side, oldStop: pos.stopPrice.toFixed(2), newStop: newStop.toFixed(2), extreme: newExtreme.toFixed(2) },
+        'Trailing stop tightened',
       );
     }
   }
 
   /**
-   * Closes the current open position on a SELL signal.
+   * Closes the current open position on an EXIT signal.
    * Persists the completed Trade and snapshots portfolio state to the DB.
    * Returns the completed Trade, or null if no position is open.
+   *
+   * PnL is sign-corrected by side: LONG profits when price rises, SHORT when it
+   * falls. The locked collateral (entryValue) is always returned to the balance
+   * along with the PnL, so a SHORT win grows the balance just like a LONG win.
    */
-  closePosition(signal: SellSignal): Trade | null {
+  closePosition(signal: ExitSignal): Trade | null {
     const position = this.state.openPosition;
     if (position === null) {
       this.deps.logger.warn('closePosition called but no position is open — skipping');
       return null;
     }
 
-    const exitValue  = position.quantity * signal.price;
-    const entryValue = position.quantity * position.entryPrice;
-    const pnlUsdt    = exitValue - entryValue;
+    const dir        = position.side === 'LONG' ? 1 : -1;
+    const entryValue = position.quantity * position.entryPrice;     // locked collateral
+    const pnlUsdt    = position.quantity * (signal.price - position.entryPrice) * dir;
     const pnlPercent = (pnlUsdt / entryValue) * 100;
 
     const trade: Trade = {
       id:         position.id,   // same UUID as the position it closes
       symbol:     position.symbol,
+      side:       position.side,
       entryPrice: position.entryPrice,
       exitPrice:  signal.price,
       quantity:   position.quantity,
@@ -313,7 +341,7 @@ export class PositionManager {
       reason:     signal.reason,
     };
 
-    const newBalance        = this.state.balance + exitValue;
+    const newBalance        = this.state.balance + entryValue + pnlUsdt;
     const newTotalPnlUsdt   = this.state.totalPnlUsdt + pnlUsdt;
     const newTotalTrades    = this.state.totalTrades + 1;
     const newWinningTrades  = this.state.winningTrades + (pnlUsdt > 0 ? 1 : 0);
@@ -343,6 +371,7 @@ export class PositionManager {
     this.deps.logger.info(
       {
         symbol:     trade.symbol,
+        side:       trade.side,
         exitPrice:  signal.price,
         pnlUsdt:    pnlUsdt.toFixed(4),
         pnlPercent: pnlPercent.toFixed(2) + '%',
@@ -351,7 +380,7 @@ export class PositionManager {
         winRate:    winRate + '%',
         trades:     newTotalTrades,
       },
-      'FAKE SELL — position closed',
+      'FAKE CLOSE — position closed',
     );
 
     return trade;

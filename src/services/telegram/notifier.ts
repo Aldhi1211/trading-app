@@ -1,6 +1,6 @@
 // src/services/telegram/notifier.ts
 
-import type { BuySignal, SellSignal, PortfolioState, ILogger, SellReason } from '../../types/index.js';
+import type { EntrySignal, ExitSignal, PortfolioState, ILogger, SellReason } from '../../types/index.js';
 
 // ---------------------------------------------------------------------------
 // Config & deps — injected, never imported from env.
@@ -69,23 +69,25 @@ export function buildReconnectMessage(symbol: string, attempt: number): string {
   return `🔄 Reconnected to ${symbol} stream (attempt ${attempt})`;
 }
 
-export function buildBuyMessage(signal: BuySignal): string {
+export function buildEntryMessage(signal: EntrySignal): string {
+  const isLong = signal.side === 'LONG';
   return [
-    `🟢 FAKE BUY — ${signal.symbol}`,
+    `${isLong ? '🟢 FAKE LONG (BUY)' : '🔻 FAKE SHORT (SELL)'} — ${signal.symbol}`,
     `📈 Entry  : $${formatUsd(signal.price)}`,
+    `🧭 Side   : ${signal.side}`,
     `🕐 Time   : ${formatTs(signal.timestamp)}`,
     `📊 RSI    : ${signal.rsi.toFixed(2)}`,
     SEP,
   ].join('\n');
 }
 
-export function buildSellMessage(
-  signal: SellSignal,
+export function buildExitMessage(
+  signal: ExitSignal,
   pnlPercent: number,
   pnlUsdt: number,
 ): string {
   const lines = [
-    `🔴 FAKE SELL — ${signal.symbol}`,
+    `⚪ FAKE CLOSE — ${signal.symbol}`,
     `📉 Exit   : $${formatUsd(signal.price)}`,
     `💰 PnL    : ${pnlSign(pnlPercent)} ($${pnlUsdt >= 0 ? '+' : ''}${pnlUsdt.toFixed(2)})`,
     `📋 Reason : ${reasonLabel(signal.reason)}`,
@@ -192,12 +194,12 @@ export class TelegramNotifier {
     await this.send(buildReconnectMessage(symbol, attempt));
   }
 
-  async notifyBuy(signal: BuySignal): Promise<void> {
-    await this.send(buildBuyMessage(signal));
+  async notifyEntry(signal: EntrySignal): Promise<void> {
+    await this.send(buildEntryMessage(signal));
   }
 
-  async notifySell(signal: SellSignal, pnlPercent: number, pnlUsdt: number): Promise<void> {
-    await this.send(buildSellMessage(signal, pnlPercent, pnlUsdt));
+  async notifyExit(signal: ExitSignal, pnlPercent: number, pnlUsdt: number): Promise<void> {
+    await this.send(buildExitMessage(signal, pnlPercent, pnlUsdt));
   }
 
   async notifyPortfolioSummary(state: PortfolioState): Promise<void> {

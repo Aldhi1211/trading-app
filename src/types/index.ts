@@ -102,12 +102,23 @@ export interface IndicatorSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Direction of a trade.
+//   LONG  — profit when price RISES (buy low, sell high).
+//   SHORT — profit when price FALLS (sell-to-open high, buy back low).
+// Shorting is impossible on a spot account; it is simulated here the way a
+// futures/margin account works (symmetric collateral, inverted PnL).
+// ---------------------------------------------------------------------------
+
+export type PositionSide = 'LONG' | 'SHORT';
+
+// ---------------------------------------------------------------------------
 // Trading signals — discriminated union so TypeScript narrows automatically.
 //
-// BuySignal.rsi is number (not null) because a BUY only fires when RSI is
-// valid and below the oversold threshold — it is definitionally non-null.
+// EntrySignal opens a position in the given side; ExitSignal closes whatever
+// position is open.
 //
-// SellSignal.rsi is number | null because price-based exits (TAKE_PROFIT,
+// EntrySignal.rsi is number (not null) — an entry only fires when RSI is valid.
+// ExitSignal.rsi is number | null because price-based exits (TAKE_PROFIT,
 // STOP_LOSS) can fire before the indicator buffer is fully warmed up.
 // ---------------------------------------------------------------------------
 
@@ -119,8 +130,9 @@ export type SellReason =
   | 'EMA20_BREAKDOWN'
   | 'MACD_REVERSAL';
 
-export interface BuySignal {
-  type: 'BUY';
+export interface EntrySignal {
+  type: 'ENTRY';
+  side: PositionSide;
   symbol: string;
   price: number;
   timestamp: number;
@@ -133,8 +145,8 @@ export interface BuySignal {
   atr: number | null;
 }
 
-export interface SellSignal {
-  type: 'SELL';
+export interface ExitSignal {
+  type: 'EXIT';
   symbol: string;
   price: number;
   timestamp: number;
@@ -142,7 +154,7 @@ export interface SellSignal {
   rsi: number | null;
 }
 
-export type Signal = BuySignal | SellSignal;
+export type Signal = EntrySignal | ExitSignal;
 
 // ---------------------------------------------------------------------------
 // Portfolio domain
@@ -156,30 +168,35 @@ export type Signal = BuySignal | SellSignal;
 export interface Position {
   id: string;         // UUID, same id will become Trade.id on close
   symbol: string;
+  side: PositionSide; // LONG or SHORT
   entryPrice: number;
   quantity: number;   // units of base asset (e.g. BTC)
   entryTime: number;  // Unix ms
   entryRsi: number;
 
-  // ── Risk-management state (set at open, stopPrice/highestPrice mutate) ──────
-  stopPrice: number;        // current stop — ratchets UP via trailing, never down
+  // ── Risk-management state (set at open, stopPrice/extremePrice mutate) ──────
+  // For LONG the stop sits BELOW entry and ratchets UP; for SHORT it sits ABOVE
+  // entry and ratchets DOWN. extremePrice is the most-favorable price seen since
+  // entry (highest for LONG, lowest for SHORT) and drives the trailing stop.
+  stopPrice: number;        // current stop — only ever moves in the favorable direction
   takeProfitPrice: number;  // fixed profit target (backstop if trailing never trips)
-  highestPrice: number;     // peak price seen since entry — drives the trailing stop
+  extremePrice: number;     // best price seen since entry — drives the trailing stop
   atrAtEntry: number;       // ATR snapshot at entry — fixes the trail distance
-  initialRisk: number;      // entryPrice - initialStop, in price units (= 1R)
+  initialRisk: number;      // |entryPrice - initialStop| in price units (= 1R)
 }
 
 export interface Trade {
   id: string;
   symbol: string;
+  side: PositionSide;
   entryPrice: number;
   exitPrice: number;
   quantity: number;
   entryTime: number;
   exitTime: number;
   entryRsi: number;   // preserved from Position for analysis
-  pnlPercent: number; // (exitValue - entryValue) / entryValue * 100
-  pnlUsdt: number;    // absolute PnL in USDT
+  pnlPercent: number; // pnlUsdt / entryValue * 100 (sign already accounts for side)
+  pnlUsdt: number;    // absolute PnL in USDT (positive = profit, either side)
   reason: SellReason;
 }
 
