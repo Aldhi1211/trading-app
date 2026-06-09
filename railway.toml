@@ -1,11 +1,17 @@
 [build]
 builder = "nixpacks"
-buildCommand = "npm install"
+# Compile TypeScript to dist/ at build time so the container runs plain node —
+# faster cold start, lower memory, and no tsx dependency at runtime.
+buildCommand = "npm install && npm run build"
 
 [deploy]
-startCommand = "npx tsx src/index.ts"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 5
+startCommand = "node dist/index.js"
+# "always" (not "on_failure"): the bot calls process.exit(0) on a graceful
+# shutdown and after exhausting WebSocket retries. With "on_failure" Railway
+# treats exit 0 as success and would NOT restart — a network blip could kill
+# the bot permanently. "always" keeps it running.
+restartPolicyType = "always"
+restartPolicyMaxRetries = 10
 
 [deploy.healthcheck]
 path = "/"
