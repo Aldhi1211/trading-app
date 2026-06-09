@@ -14,12 +14,36 @@ import type { ITradeRepository } from '../../services/database/repository.js';
 // ---------------------------------------------------------------------------
 
 export type SizingMode =
+  // 'risk': size so that hitting the stop loses `riskPerTradePct` of equity,
+  //         capped at `maxAllocationPct` of the balance. Consistent risk per
+  //         trade regardless of volatility — the professional default.
+  | { mode: 'risk';    riskPerTradePct: number; maxAllocationPct: number }
   | { mode: 'percent'; fraction: number }   // e.g. { mode: 'percent', fraction: 0.95 }
   | { mode: 'fixed';   amountUsdt: number }; // e.g. { mode: 'fixed', amountUsdt: 950 }
+
+// ---------------------------------------------------------------------------
+// Risk config — how stops & targets are placed and trailed.
+//
+// When useAtrRisk is true and an ATR is available at entry, the stop and target
+// distances scale with volatility (k * ATR). Otherwise they fall back to fixed
+// percentages of the entry price.
+// ---------------------------------------------------------------------------
+
+export interface RiskConfig {
+  useAtrRisk: boolean;
+  atrSlMult: number;       // stop distance   = atrSlMult * ATR
+  atrTpMult: number;       // target distance = atrTpMult * ATR
+  useTrailing: boolean;
+  trailAtrMult: number;    // trail the peak by trailAtrMult * ATR
+  breakevenAtR: number;    // move stop to breakeven once profit reaches this many R
+  takeProfitPct: number;   // fallback target % when ATR unavailable
+  stopLossPct: number;     // fallback stop %   when ATR unavailable
+}
 
 export interface PositionManagerConfig {
   initialBalance: number;
   sizing: SizingMode;
+  risk: RiskConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +173,24 @@ export class PositionManager {
       return null;
     }
 
-    const allocation = this.computeAllocation();
+    // ── Place volatility-adaptive stop & target ──────────────────────────────
+    const { risk } = this.config;
+    const useAtr   = risk.useAtrRisk && signal.atr !== null && signal.atr > 0;
+
+    const stopDistance = useAtr
+      ? risk.atrSlMult * (signal.atr as number)
+      : signal.price * risk.stopLossPct;
+    const tpDistance = useAtr
+      ? risk.atrTpMult * (signal.atr as number)
+      : signal.price * risk.takeProfitPct;
+
+    const stopPrice       = signal.price - stopDistance;
+    const takeProfitPrice = signal.price + tpDistance;
+    // ATR used for the trail distance; if none was available, derive an
+    // equivalent from the stop distance so trailing still behaves sensibly.
+    const atrAtEntry = useAtr ? (signal.atr as number) : stopDistance / risk.atrSlMult;
+
+    const allocation = this.computeAllocation(stopDistance, signal.price);
 
     if (allocation <= 0) {
       this.deps.logger.warn('Insufficient balance to open position');
@@ -159,12 +200,17 @@ export class PositionManager {
     const quantity = allocation / signal.price;
 
     const position: Position = {
-      id:         this.generateId(),
-      symbol:     signal.symbol,
-      entryPrice: signal.price,
+      id:              this.generateId(),
+      symbol:          signal.symbol,
+      entryPrice:      signal.price,
       quantity,
-      entryTime:  signal.timestamp,
-      entryRsi:   signal.rsi,
+      entryTime:       signal.timestamp,
+      entryRsi:        signal.rsi,
+      stopPrice,
+      takeProfitPrice,
+      highestPrice:    signal.price,
+      atrAtEntry,
+      initialRisk:     stopDistance,
     };
 
     this.state = {
@@ -179,15 +225,61 @@ export class PositionManager {
       {
         symbol:      signal.symbol,
         entryPrice:  signal.price,
+        stopPrice:   stopPrice.toFixed(2),
+        takeProfit:  takeProfitPrice.toFixed(2),
+        riskUsdt:    (stopDistance * quantity).toFixed(2),
         allocation:  allocation.toFixed(2),
         quantity:    quantity.toFixed(8),
         balance:     this.state.balance.toFixed(2),
         sizingMode:  this.config.sizing.mode,
+        atrUsed:     useAtr,
       },
       'FAKE BUY — position opened',
     );
 
     return position;
+  }
+
+  /**
+   * Ratchets the trailing stop on the open position toward the current price.
+   * Call once per closed candle BEFORE evaluating the exit signal.
+   *
+   * Behaviour (only when risk.useTrailing is enabled):
+   *   1. Track the highest price seen since entry.
+   *   2. Once profit reaches breakevenAtR × initialRisk, raise the stop to at
+   *      least breakeven (entry price) — the trade becomes risk-free.
+   *   3. From then on, trail the peak by trailAtrMult × ATR.
+   *
+   * The stop only ever moves UP, never down. No-op when nothing changes, so it
+   * does not thrash the database on every candle.
+   */
+  updateTrailing(currentPrice: number): void {
+    const pos = this.state.openPosition;
+    if (pos === null || !this.config.risk.useTrailing) return;
+
+    const newHigh = Math.max(pos.highestPrice, currentPrice);
+    let newStop   = pos.stopPrice;
+
+    const breakevenTrigger = pos.entryPrice + this.config.risk.breakevenAtR * pos.initialRisk;
+    if (newHigh >= breakevenTrigger) {
+      // 1) lock in (at least) breakeven, then 2) trail the peak.
+      newStop = Math.max(newStop, pos.entryPrice);
+      const trailStop = newHigh - this.config.risk.trailAtrMult * pos.atrAtEntry;
+      newStop = Math.max(newStop, trailStop);
+    }
+
+    if (newHigh === pos.highestPrice && newStop === pos.stopPrice) return;
+
+    const updated: Position = { ...pos, highestPrice: newHigh, stopPrice: newStop };
+    this.state = { ...this.state, openPosition: updated };
+    this.deps.repo.saveOpenPosition(updated);
+
+    if (newStop !== pos.stopPrice) {
+      this.deps.logger.info(
+        { symbol: pos.symbol, oldStop: pos.stopPrice.toFixed(2), newStop: newStop.toFixed(2), peak: newHigh.toFixed(2) },
+        'Trailing stop raised',
+      );
+    }
   }
 
   /**
@@ -270,12 +362,27 @@ export class PositionManager {
   /**
    * Computes how many USDT to allocate for the next trade based on the
    * configured sizing mode.
+   *
+   * `stopDistance` (entry − stop, in price units) is only used by 'risk' mode,
+   * which solves quantity = (equity × riskPct) / stopDistance, then converts to
+   * a USDT allocation and caps it at maxAllocationPct of the balance. The cap is
+   * essential: in low-volatility regimes the stop distance shrinks, which would
+   * otherwise demand an allocation far larger than the account.
    */
-  private computeAllocation(): number {
+  private computeAllocation(stopDistance: number, price: number): number {
     const balance = this.state.balance;
     const { sizing } = this.config;
 
     switch (sizing.mode) {
+      case 'risk': {
+        const maxAllocation = balance * sizing.maxAllocationPct;
+        if (stopDistance <= 0) return maxAllocation; // degenerate guard
+        const riskUsdt    = balance * sizing.riskPerTradePct;
+        const quantity    = riskUsdt / stopDistance;
+        const rawAlloc    = quantity * price;
+        return Math.min(rawAlloc, maxAllocation);
+      }
+
       case 'percent':
         return balance * sizing.fraction;
 

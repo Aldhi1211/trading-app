@@ -9,6 +9,7 @@ import {
   BOLLINGER_STD_DEV,
   EMA_200_PERIOD,
   ATR_PERIOD,
+  VOLUME_MA_PERIOD,
 } from '../../config/constants.js';
 import { computeRsiWithPrev } from './rsi.js';
 import { computeEmaWithPrev } from './ema.js';
@@ -42,6 +43,15 @@ export function buildIndicatorSnapshot(
   const bollingerBands = computeBollingerBands(closes, BOLLINGER_PERIOD, BOLLINGER_STD_DEV);
   const atr           = computeAtr(buffer.highs, buffer.lows, closes, ATR_PERIOD);
 
+  // Volume: current candle is the last buffer entry; baseline is the simple
+  // mean of the most recent VOLUME_MA_PERIOD candles. Null until warmed up.
+  const volumes   = buffer.volumes;
+  const volume    = volumes.length > 0 ? volumes[volumes.length - 1]! : null;
+  const avgVolume =
+    volumes.length >= VOLUME_MA_PERIOD
+      ? volumes.slice(-VOLUME_MA_PERIOD).reduce((sum, v) => sum + v, 0) / VOLUME_MA_PERIOD
+      : null;
+
   return {
     symbol:   buffer.symbol,
     timestamp,
@@ -64,5 +74,8 @@ export function buildIndicatorSnapshot(
 
     bollingerBands,
     atr,
+
+    volume,
+    avgVolume,
   };
 }

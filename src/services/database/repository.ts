@@ -44,6 +44,12 @@ interface PositionRow {
   quantity: number;
   entry_time: number;
   entry_rsi: number;
+  // Nullable: rows written before migration 003 won't have these.
+  stop_price: number | null;
+  take_profit_price: number | null;
+  highest_price: number | null;
+  atr_at_entry: number | null;
+  initial_risk: number | null;
 }
 
 export class TradeRepository {
@@ -95,8 +101,13 @@ export class TradeRepository {
       this.db.prepare('DELETE FROM open_positions').run();
       this.db
         .prepare(
-          `INSERT INTO open_positions (id, symbol, entry_price, quantity, entry_time, entry_rsi)
-           VALUES (@id, @symbol, @entry_price, @quantity, @entry_time, @entry_rsi)`
+          `INSERT INTO open_positions (
+             id, symbol, entry_price, quantity, entry_time, entry_rsi,
+             stop_price, take_profit_price, highest_price, atr_at_entry, initial_risk
+           ) VALUES (
+             @id, @symbol, @entry_price, @quantity, @entry_time, @entry_rsi,
+             @stop_price, @take_profit_price, @highest_price, @atr_at_entry, @initial_risk
+           )`
         )
         .run({
           id: position.id,
@@ -105,6 +116,11 @@ export class TradeRepository {
           quantity: position.quantity,
           entry_time: position.entryTime,
           entry_rsi: position.entryRsi,
+          stop_price: position.stopPrice,
+          take_profit_price: position.takeProfitPrice,
+          highest_price: position.highestPrice,
+          atr_at_entry: position.atrAtEntry,
+          initial_risk: position.initialRisk,
         });
     })();
   }
@@ -120,13 +136,29 @@ export class TradeRepository {
 
     if (!row) return null;
 
+    // Back-fill risk fields for positions written before migration 003. We
+    // derive conservative levels from the entry price using the configured
+    // fallback percentages so a recovered legacy position still has a valid
+    // stop/target and can be trailed.
+    const entryPrice   = row.entry_price;
+    const initialRisk  = row.initial_risk  ?? entryPrice * env.STOP_LOSS_PCT;
+    const stopPrice    = row.stop_price    ?? entryPrice - initialRisk;
+    const takeProfit   = row.take_profit_price ?? entryPrice * (1 + env.TAKE_PROFIT_PCT);
+    const highestPrice = row.highest_price ?? entryPrice;
+    const atrAtEntry   = row.atr_at_entry  ?? initialRisk / env.ATR_SL_MULT;
+
     return {
       id: row.id,
       symbol: row.symbol,
-      entryPrice: row.entry_price,
+      entryPrice,
       quantity: row.quantity,
       entryTime: row.entry_time,
       entryRsi: row.entry_rsi,
+      stopPrice,
+      takeProfitPrice: takeProfit,
+      highestPrice,
+      atrAtEntry,
+      initialRisk,
     };
   }
 

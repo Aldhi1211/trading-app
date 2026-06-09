@@ -16,6 +16,7 @@ export const BOLLINGER_PERIOD    = 20;
 export const BOLLINGER_STD_DEV   = 2;
 export const EMA_200_PERIOD      = 200;
 export const ATR_PERIOD          = 14;
+export const VOLUME_MA_PERIOD    = 20;   // baseline for volume-confirmation filter
 
 /**
  * Derives the rolling buffer capacity from the configured indicator periods.

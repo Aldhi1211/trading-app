@@ -51,20 +51,42 @@ async function main(): Promise<void> {
     logger,
   });
 
-  const sizing: SizingMode = env.POSITION_SIZING_MODE === 'fixed'
-    ? { mode: 'fixed',   amountUsdt: env.POSITION_FIXED_USDT }
-    : { mode: 'percent', fraction:   env.TRADE_ALLOCATION_PCT };
+  const sizing: SizingMode =
+    env.POSITION_SIZING_MODE === 'fixed'
+      ? { mode: 'fixed',   amountUsdt: env.POSITION_FIXED_USDT }
+      : env.POSITION_SIZING_MODE === 'percent'
+        ? { mode: 'percent', fraction: env.TRADE_ALLOCATION_PCT }
+        : { mode: 'risk', riskPerTradePct: env.RISK_PER_TRADE_PCT, maxAllocationPct: env.MAX_ALLOCATION_PCT };
 
   const portfolio = new PositionManager(
-    { initialBalance: env.INITIAL_BALANCE_USDT, sizing },
+    {
+      initialBalance: env.INITIAL_BALANCE_USDT,
+      sizing,
+      risk: {
+        useAtrRisk:    env.USE_ATR_RISK,
+        atrSlMult:     env.ATR_SL_MULT,
+        atrTpMult:     env.ATR_TP_MULT,
+        useTrailing:   env.USE_TRAILING_STOP,
+        trailAtrMult:  env.TRAIL_ATR_MULT,
+        breakevenAtR:  env.BREAKEVEN_AT_R,
+        takeProfitPct: env.TAKE_PROFIT_PCT,
+        stopLossPct:   env.STOP_LOSS_PCT,
+      },
+    },
     { repo, logger },
     { balance: restoredBalance, openPosition, totalTrades, winningTrades, totalPnlUsdt },
   );
 
   const evaluate = createSignalEngine({
-    takeProfitPct: env.TAKE_PROFIT_PCT,
-    stopLossPct:   env.STOP_LOSS_PCT,
+    rsiBuyMin: env.RSI_BUY_MIN,
+    rsiBuyMax: env.RSI_BUY_MAX,
+    volMaMult: env.VOL_MA_MULT,
+    minAtrPct: env.MIN_ATR_PCT,
   });
+
+  // Cooldown counter: after a losing trade, suppress new entries for
+  // ENTRY_COOLDOWN_BARS closed candles to avoid revenge-trading the same chop.
+  let cooldownRemaining = 0;
 
   const stream = new BinanceStream(env.SYMBOL, env.INTERVAL);
 
@@ -166,9 +188,18 @@ async function main(): Promise<void> {
     }
 
     try {
+      if (cooldownRemaining > 0) cooldownRemaining -= 1;
+
       const snapshot = buildIndicatorSnapshot(buffer, candle.close, candle.closeTime);
-      const state    = portfolio.getState();
-      const signal   = evaluate(snapshot, state.openPosition);
+
+      // Advance the trailing stop BEFORE reading state, so the exit evaluation
+      // sees the freshly-ratcheted stop level for this candle.
+      if (portfolio.getState().openPosition !== null) {
+        portfolio.updateTrailing(candle.close);
+      }
+
+      const state  = portfolio.getState();
+      const signal = evaluate(snapshot, state.openPosition);
 
       logger.info({
         price:   candle.close,
@@ -176,12 +207,18 @@ async function main(): Promise<void> {
         ema20:   snapshot.emaFast?.toFixed(2),
         ema50:   snapshot.emaSlow?.toFixed(2),
         ema200:  snapshot.ema200?.toFixed(2),
+        stop:    state.openPosition?.stopPrice.toFixed(2),
         signal:  signal?.type ?? 'none',
+        cooldown: cooldownRemaining,
       }, 'Candle snapshot');
 
       if (!signal) return;
 
       if (signal.type === 'BUY') {
+        if (cooldownRemaining > 0) {
+          logger.info({ cooldownRemaining }, 'BUY signal suppressed — in post-loss cooldown');
+          return;
+        }
         const position = portfolio.openPosition(signal);
         if (position) {
           await telegram.notifyBuy(signal);
@@ -189,6 +226,8 @@ async function main(): Promise<void> {
       } else {
         const trade = portfolio.closePosition(signal);
         if (trade) {
+          // Arm the cooldown only after a losing exit.
+          if (trade.pnlUsdt < 0) cooldownRemaining = env.ENTRY_COOLDOWN_BARS;
           await telegram.notifySell(signal, trade.pnlPercent, trade.pnlUsdt);
         }
       }

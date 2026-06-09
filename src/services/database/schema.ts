@@ -105,6 +105,20 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_trades_exit_time ON trades (exit_time DESC);
     `,
   },
+  // ── v3: risk-management fields on open_positions ──────────────────────────
+  // ATR-based stop/target levels and trailing-stop state. Added as nullable
+  // columns (no DEFAULT) so any position carried over from a pre-v3 session is
+  // detected by NULL and back-filled in the repository from the entry price.
+  {
+    name: '003_position_risk_fields',
+    sql: `
+      ALTER TABLE open_positions ADD COLUMN stop_price        REAL;
+      ALTER TABLE open_positions ADD COLUMN take_profit_price REAL;
+      ALTER TABLE open_positions ADD COLUMN highest_price     REAL;
+      ALTER TABLE open_positions ADD COLUMN atr_at_entry      REAL;
+      ALTER TABLE open_positions ADD COLUMN initial_risk      REAL;
+    `,
+  },
 ];
 
 // ---------------------------------------------------------------------------

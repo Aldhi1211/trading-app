@@ -96,6 +96,9 @@ export interface IndicatorSnapshot {
   bollingerBands: BollingerResult | null;
 
   atr: number | null;
+
+  volume: number | null;     // volume of the just-closed candle
+  avgVolume: number | null;  // SMA of volume over VOL_MA_PERIOD — momentum baseline
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +114,7 @@ export interface IndicatorSnapshot {
 export type SellReason =
   | 'TAKE_PROFIT'
   | 'STOP_LOSS'
+  | 'TRAILING_STOP'
   | 'RSI_OVERBOUGHT'
   | 'EMA20_BREAKDOWN'
   | 'MACD_REVERSAL';
@@ -121,6 +125,12 @@ export interface BuySignal {
   price: number;
   timestamp: number;
   rsi: number;
+  /**
+   * ATR at entry — passed to the PositionManager so it can size the trade by
+   * risk and place a volatility-adaptive stop/target. Null only if the buffer
+   * was too short to compute ATR (the manager then falls back to % stops).
+   */
+  atr: number | null;
 }
 
 export interface SellSignal {
@@ -150,6 +160,13 @@ export interface Position {
   quantity: number;   // units of base asset (e.g. BTC)
   entryTime: number;  // Unix ms
   entryRsi: number;
+
+  // ── Risk-management state (set at open, stopPrice/highestPrice mutate) ──────
+  stopPrice: number;        // current stop — ratchets UP via trailing, never down
+  takeProfitPrice: number;  // fixed profit target (backstop if trailing never trips)
+  highestPrice: number;     // peak price seen since entry — drives the trailing stop
+  atrAtEntry: number;       // ATR snapshot at entry — fixes the trail distance
+  initialRisk: number;      // entryPrice - initialStop, in price units (= 1R)
 }
 
 export interface Trade {

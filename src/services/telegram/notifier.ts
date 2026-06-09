@@ -48,6 +48,7 @@ function reasonLabel(reason: SellReason): string {
   const labels: Record<SellReason, string> = {
     TAKE_PROFIT:     'Take Profit ✅',
     STOP_LOSS:       'Stop Loss ❌',
+    TRAILING_STOP:   'Trailing Stop 🛡️',
     RSI_OVERBOUGHT:  'RSI Overbought 📈',
     EMA20_BREAKDOWN: 'EMA20 Breakdown 📉',
     MACD_REVERSAL:   'MACD Reversal 🔄',
