@@ -11,6 +11,7 @@
     "dev":       "tsx watch src/index.ts",
     "backtest":  "tsx src/backtest.ts",
     "ideas":     "tsx src/backtest-ideas.ts",
+    "dca":       "tsx src/dca-sim.ts",
     "typecheck": "tsc --noEmit",
     "test":      "vitest run",
     "test:watch":"vitest",

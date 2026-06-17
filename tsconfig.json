@@ -23,5 +23,5 @@
     "sourceMap":                       true
   },
   "include":  ["src/**/*"],
-  "exclude":  ["node_modules", "dist", "src/backtest.ts", "src/backtest-ideas.ts"]
+  "exclude":  ["node_modules", "dist", "src/backtest.ts", "src/backtest-ideas.ts", "src/dca-sim.ts"]
 }
