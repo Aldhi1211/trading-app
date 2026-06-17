@@ -9,6 +9,7 @@
     "prebuild":  "tsc --noEmit",
     "start":     "node dist/index.js",
     "dev":       "tsx watch src/index.ts",
+    "backtest":  "tsx src/backtest.ts",
     "typecheck": "tsc --noEmit",
     "test":      "vitest run",
     "test:watch":"vitest",
